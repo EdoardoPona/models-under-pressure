@@ -410,6 +410,9 @@ def save_compressed(path: Path, tensor: torch.Tensor):
     """
     if not path.name.endswith(".pt.zst"):
         raise ValueError("Path must have .pt.zst suffix")
+    # Ensure parent directories exist so saving doesn't fail if they
+    # haven't been created yet.
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix("")
 
     start = time.time()
