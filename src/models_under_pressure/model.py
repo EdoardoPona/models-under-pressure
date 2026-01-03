@@ -255,10 +255,32 @@ class LLMModel:
         """
         hf_login()
 
+        # Special handling for Apple Silicon / MPS: avoid loading bf16 weights
+        # directly onto MPS, which is not supported. Instead, load on CPU with
+        # a safe dtype then move the model to MPS.
+        has_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+        use_mps_path = False
+
+        # llm_device can be a string ("auto", "mps", "cuda", "cpu") or a torch.device.
+        if has_mps and not torch.cuda.is_available():
+            if isinstance(llm_device, str):
+                # Treat explicit "mps" or default "auto" on Mac as MPS path.
+                if llm_device in {"mps", "auto"}:
+                    use_mps_path = True
+            elif isinstance(llm_device, torch.device) and llm_device.type == "mps":
+                use_mps_path = True
+
+        if use_mps_path:
+            # Load on CPU first with a safe dtype, then move to MPS.
+            effective_device_map: torch.device | str | None = None
+            effective_dtype: torch.dtype = torch.float16
+        else:
+            effective_device_map = llm_device
+            effective_dtype = global_settings.DTYPE
         model_kwargs = {
             "pretrained_model_name_or_path": model_name,
-            "device_map": llm_device,
-            "torch_dtype": global_settings.DTYPE,
+            "device_map": effective_device_map,
+            "torch_dtype": effective_dtype,
             "cache_dir": global_settings.CACHE_DIR,
             "max_memory": global_settings.MODEL_MAX_MEMORY.get(
                 global_settings.DEFAULT_MODEL
@@ -270,7 +292,13 @@ class LLMModel:
             "cache_dir": global_settings.CACHE_DIR,
             **(tokenizer_kwargs or {}),
         }
+        print('MODEL KWARGS:', model_kwargs)
         model = AutoModelForCausalLM.from_pretrained(**model_kwargs)
+
+        # If we took the MPS path, move the fully materialized model to MPS now.
+        if use_mps_path:
+            model.to("mps")
+            llm_device = torch.device("mps")
         tokenizer = AutoTokenizer.from_pretrained(**tokenizer_kwargs)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
