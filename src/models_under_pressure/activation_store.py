@@ -46,7 +46,15 @@ class ActivationsSpec(BaseModel):
 
     @field_validator("dataset_path")
     def validate_dataset_path(cls, v: Path) -> Path:
-        return v.resolve().relative_to(PROJECT_ROOT)
+        # Keep paths relative to PROJECT_ROOT when possible for backwards
+        # compatibility, but allow arbitrary locations (e.g. ../data/...).
+        v = v.resolve()
+        try:
+            return v.relative_to(PROJECT_ROOT)
+        except ValueError:
+            # If the path is outside PROJECT_ROOT, just use the absolute path
+            # instead of raising an error about not being a subpath.
+            return v
 
 
 class ManifestRow(BaseModel):
@@ -154,20 +162,35 @@ class ActivationStore:
 
     Attributes:
         path: Local directory path for storing activations
-        bucket: Cloud storage bucket name for storing activations
+        bucket: Optional cloud storage bucket name for storing activations.
+            If this is None, all operations are performed locally only.
     """
 
     path: Path = global_settings.ACTIVATIONS_DIR
-    bucket: str = ACTIVATIONS_BUCKET  # type: ignore
+    # When global_settings.USE_R2 is False or no R2 bucket is configured,
+    # this will be None and the store will operate purely on local files.
+    bucket: str | None = (
+        ACTIVATIONS_BUCKET if global_settings.USE_R2 and ACTIVATIONS_BUCKET else None
+    )
     manifest: Manifest = field(init=False)
 
     def __post_init__(self):
+        # Ensure the local activations directory exists
+        self.path.mkdir(parents=True, exist_ok=True)
         self.manifest = self.load_manifest()
 
     def load_manifest(self) -> Manifest:
-        download_file(self.bucket, "manifest.json", self.manifest_path)
-        with open(self.manifest_path, "r") as f:
-            return Manifest.model_validate_json(f.read())
+        # In local-only mode, or if no remote manifest exists yet, fall back
+        # to a local manifest file if present, otherwise start with an empty
+        # manifest.
+        if self.bucket:
+            download_file(self.bucket, "manifest.json", self.manifest_path)
+
+        if self.manifest_path.exists():
+            with open(self.manifest_path, "r") as f:
+                return Manifest.model_validate_json(f.read())
+
+        return Manifest(rows=[])
 
     @property
     def manifest_path(self) -> Path:
@@ -177,7 +200,9 @@ class ActivationStore:
         with open(self.manifest_path, "w") as f:
             f.write(self.manifest.model_dump_json(indent=2))
 
-        upload_file(self.bucket, "manifest.json", self.manifest_path)
+        # Upload to remote storage only if configured
+        if self.bucket:
+            upload_file(self.bucket, "manifest.json", self.manifest_path)
 
     def sync(
         self, add_specs: list[ActivationsSpec], remove_specs: list[ActivationsSpec]
@@ -193,9 +218,16 @@ class ActivationStore:
         local_paths = {
             str(path.relative_to(self.path)) for path in self.path.glob("**/*.pt.zst")
         }
-        remote_paths = {
-            path for path in list_bucket_files(self.bucket) if path.endswith(".pt.zst")
-        }
+
+        # In local-only mode, there is no remote state; otherwise, query R2.
+        if self.bucket:
+            remote_paths = {
+                path
+                for path in list_bucket_files(self.bucket)
+                if path.endswith(".pt.zst")
+            }
+        else:
+            remote_paths: set[str] = set()
 
         # Delete local files that are not in the manifest
         for path in local_paths - manifest_paths:
@@ -203,15 +235,17 @@ class ActivationStore:
             (self.path / path).unlink()
             (self.path / path).with_suffix("").unlink()
 
-        # Delete remote files that are not in the manifest
-        for path in remote_paths - manifest_paths:
-            print(f"Deleting {path} from remote")
-            delete_file(self.bucket, path)
+        # If using remote storage, keep the bucket in sync with the manifest
+        if self.bucket:
+            # Delete remote files that are not in the manifest
+            for path in remote_paths - manifest_paths:
+                print(f"Deleting {path} from remote")
+                delete_file(self.bucket, path)
 
-        # Any remaining local files that aren't in remote are new activations, upload them
-        for path in local_paths - remote_paths:
-            print(f"Uploading {path} to remote")
-            upload_file(self.bucket, path, self.path / path)
+            # Any remaining local files that aren't in remote are new activations, upload them
+            for path in local_paths - remote_paths:
+                print(f"Uploading {path} to remote")
+                upload_file(self.bucket, path, self.path / path)
 
         # Delete from the manifest any activations that are not present locally or remotely
         for path in manifest_paths - local_paths - remote_paths:
@@ -289,16 +323,24 @@ class ActivationStore:
         Raises:
             FileNotFoundError: If the requested activations are not found in storage
         """
-        manifest_row = ManifestRow.from_spec(spec)
-
         if not self.exists(spec):
             raise FileNotFoundError(f"Activations for {spec} not found")
+
+        manifest_row = ManifestRow.from_spec(spec)
 
         for path in manifest_row.paths:
             key = str(path)
             local_path = self.path / path
             if not local_path.exists():
-                download_file(self.bucket, key, local_path)
+                # If we have remote storage configured, try to fetch missing
+                # files from the bucket. In local-only mode, treat missing
+                # local files as an error.
+                if self.bucket:
+                    download_file(self.bucket, key, local_path)
+                else:
+                    raise FileNotFoundError(
+                        f"Missing local activation file {local_path} and no R2 bucket configured"
+                    )
 
         # Load and decompress each file
         activations = load_compressed(self.path / manifest_row.activations, mmap)

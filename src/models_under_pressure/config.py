@@ -36,6 +36,10 @@ class GlobalSettings(BaseSettings):
     WANDB_PROJECT: str | None = "models-under-pressure"  # Default W&B project name
     WANDB_API_KEY: str | None = None
     USE_PROBE_STORE: bool = True
+    # Whether to use Cloudflare R2 for storing activations/datasets.
+    # If set to False (or unset and no R2_* env vars are provided),
+    # activations will be stored and managed purely on the local filesystem.
+    USE_R2: bool = True
 
 
 global_settings = GlobalSettings()
