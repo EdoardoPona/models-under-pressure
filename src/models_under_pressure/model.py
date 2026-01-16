@@ -292,7 +292,6 @@ class LLMModel:
             "cache_dir": global_settings.CACHE_DIR,
             **(tokenizer_kwargs or {}),
         }
-        print('MODEL KWARGS:', model_kwargs)
         model = AutoModelForCausalLM.from_pretrained(**model_kwargs)
 
         # If we took the MPS path, move the fully materialized model to MPS now.

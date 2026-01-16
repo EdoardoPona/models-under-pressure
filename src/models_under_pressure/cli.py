@@ -4,8 +4,9 @@ from pathlib import Path
 
 import typer
 
-from models_under_pressure.activation_store import ActivationsSpec, ActivationStore
-from models_under_pressure.config import LOCAL_MODELS
+from models_under_pressure.activation_store import (ActivationsSpec,
+                                                    ActivationStore)
+from models_under_pressure.config import DATA_DIR, LOCAL_MODELS
 from models_under_pressure.dataset_store import DatasetStore
 from models_under_pressure.interfaces.dataset import LabelledDataset
 from models_under_pressure.model import LLMModel
@@ -150,11 +151,37 @@ class ActivationStoreCLI:
         Supports both direct paths and wildcard patterns (e.g. data/**/*.csv).
         Can handle both absolute and relative paths.
         """
-        if "*" in str(dataset_path):
-            return list(Path.cwd().glob(str(dataset_path)))
-        else:
-            # Handle direct path
-            return [dataset_path]
+        pattern_str = str(dataset_path)
+
+        # Wildcard patterns: try current working directory first, then DATA_DIR
+        if "*" in pattern_str:
+            paths = list(Path.cwd().glob(pattern_str))
+            if paths:
+                return paths
+
+            # Fallback: interpret pattern relative to DATA_DIR, stripping an
+            # optional leading "data/" for backwards compatibility.
+            rel_pattern = pattern_str
+            if rel_pattern.startswith("data/"):
+                rel_pattern = rel_pattern[len("data/") :]
+            return list(DATA_DIR.glob(rel_pattern))
+
+        # Non-wildcard: resolve a single path
+        p = dataset_path
+        if p.is_absolute():
+            return [p]
+
+        # If it exists relative to CWD, keep behaviour unchanged
+        cwd_path = (Path.cwd() / p).resolve()
+        if cwd_path.exists():
+            return [cwd_path]
+
+        # Otherwise, treat it as relative to DATA_DIR, with optional leading
+        # "data/" stripped to preserve old CLI usage.
+        parts = p.parts
+        if parts and parts[0] == "data":
+            p = Path(*parts[1:])
+        return [(DATA_DIR / p).resolve()]
 
     def _parse_model_name(self, model_name: str) -> str:
         """Parse a model name."""

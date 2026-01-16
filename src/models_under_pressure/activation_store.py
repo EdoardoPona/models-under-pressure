@@ -18,15 +18,11 @@ import zstandard as zstd
 from pydantic import BaseModel, field_validator
 from tqdm import tqdm
 
-from models_under_pressure.config import PROJECT_ROOT, global_settings
+from models_under_pressure.config import ACTIVATIONS_DIR, PROJECT_ROOT, global_settings
 from models_under_pressure.interfaces.dataset import LabelledDataset
-from models_under_pressure.r2 import (
-    ACTIVATIONS_BUCKET,
-    delete_file,
-    download_file,
-    list_bucket_files,
-    upload_file,
-)
+from models_under_pressure.r2 import (ACTIVATIONS_BUCKET, delete_file,
+                                      download_file, list_bucket_files,
+                                      upload_file)
 
 
 class ActivationsSpec(BaseModel):
@@ -113,9 +109,16 @@ class ManifestRow(BaseModel):
         Returns:
             The specification for this manifest row
         """
+        # Reconstruct the original dataset path. If the stored path is
+        # relative, interpret it with respect to PROJECT_ROOT; if it is
+        # absolute, use it as-is.
+        dataset_path = self.dataset_path
+        if not dataset_path.is_absolute():
+            dataset_path = (PROJECT_ROOT / dataset_path).resolve()
+
         return ActivationsSpec(
             model_name=self.model_name,
-            dataset_path=PROJECT_ROOT / self.dataset_path,
+            dataset_path=dataset_path,
             layer=self.layer,
         )
 
@@ -166,7 +169,7 @@ class ActivationStore:
             If this is None, all operations are performed locally only.
     """
 
-    path: Path = global_settings.ACTIVATIONS_DIR
+    path: Path = ACTIVATIONS_DIR
     # When global_settings.USE_R2 is False or no R2 bucket is configured,
     # this will be None and the store will operate purely on local files.
     bucket: str | None = (
@@ -398,7 +401,7 @@ def load_compressed(path: Path, mmap: bool) -> torch.Tensor:
                     f_out.write(chunk)
                     pbar.update(f_in.tell() - pbar.n)
 
-    return torch.load(tmp_path, map_location="cpu", mmap=mmap)
+    return torch.load(str(tmp_path), map_location="cpu", mmap=mmap)
 
 
 def save_compressed(path: Path, tensor: torch.Tensor):

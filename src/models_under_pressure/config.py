@@ -1,4 +1,7 @@
+from dotenv import load_dotenv
+load_dotenv()
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -6,31 +9,53 @@ from typing import Any, Optional
 
 import torch
 import yaml
-from pydantic import BaseModel, Field, JsonValue, ValidationInfo, field_validator
+from pydantic import (BaseModel, Field, JsonValue, ValidationInfo,
+                      field_validator)
 from pydantic_settings import BaseSettings
 
 from models_under_pressure.interfaces.probes import ProbeSpec
-from models_under_pressure.utils import (
-    generate_short_id,
-    generate_short_id_with_timestamp,
-)
+from models_under_pressure.utils import (generate_short_id,
+                                         generate_short_id_with_timestamp)
 
-PROJECT_ROOT = Path(__file__).parent.parent.parent
-CONFIG_DIR = PROJECT_ROOT / "config"
-DATA_DIR = PROJECT_ROOT / "data"
+PROJECT_ROOT = Path(os.environ['MUP_PROJECT_ROOT'])
+CONFIG_DIR = Path(os.environ['MUP_CONFIG_DIR'])
+
+assert PROJECT_ROOT.is_dir(), f"PROJECT_ROOT path {PROJECT_ROOT} is not a directory"
+assert CONFIG_DIR.is_dir(), f"CONFIG_DIR path {CONFIG_DIR} is not a directory"
+
+def _resolve_data_dir() -> Path:
+    """Resolve the base data directory.
+
+    Preference order:
+    1. DATA_DIR environment variable (absolute or relative to PROJECT_ROOT)
+    2. PROJECT_ROOT / "data" (repository-local default)
+    """
+
+    env_val = os.getenv("DATA_DIR")
+    if not env_val:
+        return (PROJECT_ROOT / "data").resolve()
+
+    data_path = Path(env_val).expanduser()
+    if not data_path.is_absolute():
+        data_path = (PROJECT_ROOT / data_path).resolve()
+    return data_path
+
+
+DATA_DIR = _resolve_data_dir()
 
 
 class GlobalSettings(BaseSettings):
     LLM_DEVICE: str = "auto"  # Device for the LLM model
     DEVICE: str = (
-        "cuda" if torch.cuda.is_available() else "cpu"
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
     )  # Device for activations, probes, etc.
     DTYPE: torch.dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     BATCH_SIZE: int = 4
     MODEL_MAX_MEMORY: dict[str, int | None] = Field(default_factory=dict)
     CACHE_DIR: str | None = None
     DEFAULT_MODEL: str = "gpt-4o"
-    ACTIVATIONS_DIR: Path = DATA_DIR / "activations"
     DOUBLE_CHECK_CONFIG: bool = True
     PL_DEFAULT_ROOT_DIR: str | None = None
     WANDB_PROJECT: str | None = "models-under-pressure"  # Default W&B project name
@@ -43,6 +68,9 @@ class GlobalSettings(BaseSettings):
 
 
 global_settings = GlobalSettings()
+
+
+ACTIVATIONS_DIR = DATA_DIR / "activations"
 
 
 LOCAL_MODELS = {
@@ -84,17 +112,45 @@ USE_BALANCED_DATASETS = True
 EVALS_DIR = DATA_DIR / "evals" / "dev"
 TEST_EVALS_DIR = DATA_DIR / "evals" / "test"
 
+
+def _resolve_eval_path(path_str: str) -> Path:
+    """Resolve eval dataset paths so they track DATA_DIR.
+
+    - Absolute paths are used as-is.
+    - Paths starting with "data/" are interpreted relative to DATA_DIR.
+    - Other relative paths are also interpreted relative to DATA_DIR.
+    """
+
+    path = Path(path_str)
+    if path.is_absolute():
+        return path
+
+    parts = path.parts
+    if parts and parts[0] == "data":
+        path = Path(*parts[1:])
+
+    return (DATA_DIR / path).resolve()
+
+
 with open(CONFIG_DIR / "eval_datasets" / "dev_raw.yaml") as f:
-    EVAL_DATASETS_RAW = {k: PROJECT_ROOT / v for k, v in yaml.safe_load(f).items()}
+    EVAL_DATASETS_RAW = {
+        k: _resolve_eval_path(v) for k, v in yaml.safe_load(f).items()
+    }
 
 with open(CONFIG_DIR / "eval_datasets" / "dev_balanced.yaml") as f:
-    EVAL_DATASETS_BALANCED = {k: PROJECT_ROOT / v for k, v in yaml.safe_load(f).items()}
+    EVAL_DATASETS_BALANCED = {
+        k: _resolve_eval_path(v) for k, v in yaml.safe_load(f).items()
+    }
 
 with open(CONFIG_DIR / "eval_datasets" / "test_raw.yaml") as f:
-    TEST_DATASETS_RAW = {k: PROJECT_ROOT / v for k, v in yaml.safe_load(f).items()}
+    TEST_DATASETS_RAW = {
+        k: _resolve_eval_path(v) for k, v in yaml.safe_load(f).items()
+    }
 
 with open(CONFIG_DIR / "eval_datasets" / "test_balanced.yaml") as f:
-    TEST_DATASETS_BALANCED = {k: PROJECT_ROOT / v for k, v in yaml.safe_load(f).items()}
+    TEST_DATASETS_BALANCED = {
+        k: _resolve_eval_path(v) for k, v in yaml.safe_load(f).items()
+    }
 
 EVAL_DATASETS = EVAL_DATASETS_BALANCED if USE_BALANCED_DATASETS else EVAL_DATASETS_RAW
 TEST_DATASETS = TEST_DATASETS_BALANCED if USE_BALANCED_DATASETS else TEST_DATASETS_RAW

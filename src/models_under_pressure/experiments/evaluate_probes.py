@@ -106,8 +106,11 @@ def evaluate_probe_and_save_results(
             # "per_token_probe_logits": per_token_probe_logits,
             "per_token_probe_scores": per_token_probe_scores,
             "tokens": eval_dataset.other_fields["input_ids"].tolist(),  # type: ignore
-            "per_token_attention_scores": per_token_attention_scores,
         }
+
+        # Only include per-token attention scores for attention-based probes
+        if len(per_token_attention_scores) > 0:
+            probe_scores_dict["per_token_attention_scores"] = per_token_attention_scores
 
         for score, values in probe_scores_dict.items():
             if len(values) != len(eval_dataset.inputs):

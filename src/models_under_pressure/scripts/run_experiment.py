@@ -4,19 +4,15 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from models_under_pressure.baselines.baselines import run_baselines
-from models_under_pressure.config import (
-    CONFIG_DIR,
-    PROJECT_ROOT,
-    TRAIN_DIR,
-    ChooseLayerConfig,
-    EvalRunConfig,
-    HeatmapRunConfig,
-    RunBaselinesConfig,
-    global_settings,
-)
-from models_under_pressure.experiments.cross_validation import choose_best_layer_via_cv
+from models_under_pressure.config import (CONFIG_DIR, TRAIN_DIR,
+                                          ChooseLayerConfig, EvalRunConfig,
+                                          HeatmapRunConfig, RunBaselinesConfig,
+                                          _resolve_eval_path, global_settings)
+from models_under_pressure.experiments.cross_validation import \
+    choose_best_layer_via_cv
 from models_under_pressure.experiments.evaluate_probes import run_evaluation
-from models_under_pressure.experiments.generate_heatmaps import generate_heatmaps
+from models_under_pressure.experiments.generate_heatmaps import \
+    generate_heatmaps
 from models_under_pressure.utils import AttrDict, double_check_config
 
 
@@ -32,7 +28,9 @@ def run_experiment(config: DictConfig):
     torch.manual_seed(config.random_seed)
 
     train_data_path = TRAIN_DIR / config.train_data
-    eval_datasets = {k: PROJECT_ROOT / v for k, v in config.eval_datasets.items()}
+    # Resolve eval dataset paths relative to DATA_DIR (via _resolve_eval_path)
+    # so that the DATA_DIR environment variable is respected.
+    eval_datasets = {k: _resolve_eval_path(v) for k, v in config.eval_datasets.items()}
 
     if config.experiment == "evaluate_probe":
         evaluate_probe_config = EvalRunConfig(
