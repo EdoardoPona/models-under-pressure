@@ -1,3 +1,4 @@
+import gc
 from pathlib import Path
 
 import numpy as np
@@ -362,6 +363,13 @@ class LikelihoodContinuationBaseline:
                 other_fields["low_stakes_score"].append(float(probs[0]))
                 other_fields["model"].append(self.model.name)
                 other_fields["token_counts"].append(token_count)
+
+            # Clean up batch tensors after processing
+            del all_lls, combined_batch
+
+            # Periodic garbage collection to free numpy arrays
+            if i % (half_batch * 10) == 0:
+                gc.collect()
 
         return LabelledDataset(inputs=inputs, ids=ids, other_fields=other_fields)
 

@@ -33,6 +33,23 @@ from models_under_pressure.interfaces.dataset import (
 from models_under_pressure.utils import batched_range, hf_login
 
 
+def clear_device_cache(device: torch.device | str) -> None:
+    """Clear device cache for CUDA or MPS.
+
+    Args:
+        device: The device to clear cache for
+    """
+    if isinstance(device, str):
+        device_type = device
+    else:
+        device_type = device.type
+
+    if device_type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif device_type == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 # type: ignore
 class ModelArchitecture(ABC):
     """Base class for handling different model architectures."""
@@ -501,6 +518,12 @@ class LLMModel:
                 all_log_probs[batch_indices, :out_seq_len] = token_log_probs
             else:
                 all_log_probs[batch_indices, -out_seq_len:] = token_log_probs
+
+            # Explicitly delete large tensors to free MPS/CUDA memory
+            del outputs, logits, log_probs, token_log_probs, targets, attention_mask
+
+            # Clear device cache to release memory immediately
+            clear_device_cache(self.llm_device)
 
         return all_log_probs.to(self.llm_device)
 
